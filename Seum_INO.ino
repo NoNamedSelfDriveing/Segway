@@ -16,28 +16,37 @@
 #define RightMotorBlack  8  // B-IN1 -> B-OUT1 -> RightMotorBlack
 #define RightMotorRed    7  // B-IN2 -> B-OUT2 -> RightMotorRed
 
-#define TARGET 90.0
-#define RANGE 0.1
+#define TARGET 180.0
+#define RANGE 0.5
+
+Kalman kalmanX;
+
+/* IMU DATA */
+float accXangle;//, accYangle; // Angle calculate using the accelerometer
+float gyroXangle;//, gyroYangle; // Angle calculate using the gyro
+float kalAngleX;//, kalAngleY; // Calculate the angle using a Kalman filter
 
 double Kp, Ki, Kd;
-double XANGLE;
 
 double pControl, iControl, dControl;
 double IntegralError, prevError;
 
-double PWM_MIN;
+int16_t accX, accY, accZ;
+int16_t tempRaw;
+int16_t gyroX, gyroY, gyroZ;
 
-unsigned long prev_time = 0;
+float accCurrentAngle;//, accYangle; // Angle calculate using the accelerometer
+float gyroCurrentAngle;//, gyroYangle; // Angle calculate using the gyro
+
+unsigned long timer;
+uint8_t i2cData[14]; // Buffer for I2C data
+float CurrentAngle;
+/* IMU DATA */
 
 void setup() {
     
   Wire.begin();
   Serial.begin(115200);
-
-  Wire.beginTransmission(MPU6050); //MPU로 데이터 전송 시작
-  Wire.write(0x6B);  // PWR_MGMT_1 register
-  Wire.write(0);     //MPU-6050 시작 모드로
-  Wire.endTransmission(true); 
 
   pinMode(PWMA, OUTPUT);
   pinMode(PWMB, OUTPUT);
@@ -46,34 +55,55 @@ void setup() {
   pinMode(LeftMotorRed, OUTPUT);
   pinMode(RightMotorBlack, OUTPUT);
   pinMode(RightMotorRed, OUTPUT);
+
+  i2cData[0] = 7; // Set the sample rate to 1000Hz - 8kHz/(7+1) = 1000Hz
+  i2cData[1] = 0x00; // Disable FSYNC and set 260 Hz Acc filtering, 256 Hz Gyro filtering, 8 KHz sampling
+  i2cData[2] = 0x00; // Set Gyro Full Scale Range to ±250deg/s
+  i2cData[3] = 0x00; // Set Accelerometer Full Scale Range to ±2g
+  
+  while(i2cWrite(0x19,i2cData,4,false)); // Write to all four registers at once
+  while(i2cWrite(0x6B,0x01,true)); // PLL with X axis gyroscope reference and disable sleep mode 
+
+  while(i2cRead(0x75,i2cData,1));
+  
+  if(i2cData[0] != 0x68) { // Read "WHO_AM_I" register
+    Serial.print(F("Error reading sensor"));
+    while(1);
+  }
+
+  delay(100); // Wait for sensor to stabilize
+
+  /* Set kalman and gyro starting angle */
+  while(i2cRead(0x3B,i2cData,6));
+  accX = ((i2cData[0] << 8) | i2cData[1]);
+  accY = ((i2cData[2] << 8) | i2cData[3]);
+  accZ = ((i2cData[4] << 8) | i2cData[5]);
+  accXangle = (atan2(accY,accZ)+PI)*RAD_TO_DEG;
+
+  kalmanX.setAngle(accXangle); // Set starting angle
+  gyroXangle = accXangle;
+  timer = micros();
 }
 
 void GetIMUData()
 {
-  int AcY,AcZ,GyX;
-  double ACCX, GYROX;
-
-  Wire.beginTransmission(MPU6050);    //데이터 전송시작
-  Wire.write(0x3D);               // register 0x3B (ACCEL_XOUT_H), 큐에 데이터 기록
-  Wire.endTransmission(false);    //연결유지  
-  Wire.requestFrom(MPU6050, 4, true);  //MPU에 데이터 요청
+  while(i2cRead(0x3B,i2cData,14));
   
-  AcY = Wire.read() << 8 | Wire.read();  // 0x3D (ACCEL_YOUT_H) & 0x3E (ACCEL_YOUT_L)
-  AcZ = Wire.read() << 8 | Wire.read();  // 0x3F (ACCEL_ZOUT_H) & 0x40 (ACCEL_ZOUT_L)
+  accX = ((i2cData[0] << 8) | i2cData[1]);
+  accY = ((i2cData[2] << 8) | i2cData[3]);
+  accZ = ((i2cData[4] << 8) | i2cData[5]);
   
-  Wire.beginTransmission(MPU6050);    //데이터 전송시작
-  Wire.write(0x43);               // register 0x3B (ACCEL_XOUT_H), 큐에 데이터 기록
-  Wire.endTransmission(false);
+  tempRaw = ((i2cData[6] << 8) | i2cData[7]);  
   
-  Wire.requestFrom(MPU6050, 2, true);
+  gyroX = ((i2cData[8] << 8) | i2cData[9]);
+  gyroY = ((i2cData[10] << 8) | i2cData[11]);
+  gyroZ = ((i2cData[12] << 8) | i2cData[13]);
   
-  GyX = Wire.read() << 8 | Wire.read();  // 0x43 (GYRO_XOUT_H) & 0x44 (GYRO_XOUT_L)
- 
-  ACCX = atan2(AcZ, AcY) * 180 / PI;
-  GYROX = (double)GyX / 131.0;
-  XANGLE = (0.93 * (XANGLE + (GYROX * DT)) + (0.07 * ACCX));
+  accCurrentAngle = (atan2(accY,accZ) + PI) * RAD_TO_DEG;
+  double gyroXrate = (double)gyroX/131.0;
   
-  //Serial.println(XANGLE);  
+  CurrentAngle = kalmanX.getAngle(accCurrentAngle, gyroXrate, (double)(micros()-timer)/1000000);
+  timer = micros();
 }
 
 void GetAnalogData()
@@ -81,9 +111,6 @@ void GetAnalogData()
   Kp = ( analogRead(0) / 1023.0 ) * 10.0;
   Ki = ( analogRead(1) / 1023.0 ) * 10.0;
   Kd = ( analogRead(2) / 1023.0 ) * 10.0;
-
-  PWM_MIN = ( analogRead(3) / 1023.0 ) * 100.0;
-  
 }
 
 int PID()
@@ -92,7 +119,7 @@ int PID()
 
   int control;
   
-  error = XANGLE - TARGET;
+  error = TARGET - CurrentAngle;
   pControl = error * Kp;
 
   IntegralError += error * 0.01;
@@ -121,16 +148,13 @@ void MotorStop(int LMB, int LMR, int RMB, int RMR)
 void Motor(int control, int LMB, int LMR, int RMB, int RMR)
 { 
   
-    digitalWrite(LMB, XANGLE > TARGET ? HIGH : LOW);
-    digitalWrite(LMR, XANGLE > TARGET ? LOW : HIGH);
-    digitalWrite(RMB, XANGLE > TARGET ? HIGH : LOW);
-    digitalWrite(RMR, XANGLE > TARGET ? LOW : HIGH);
+    digitalWrite(LMR, CurrentAngle > TARGET ? HIGH : LOW);
+    digitalWrite(LMB, CurrentAngle > TARGET ? LOW : HIGH);
+    digitalWrite(RMR, CurrentAngle > TARGET ? HIGH : LOW);
+    digitalWrite(RMB, CurrentAngle > TARGET ? LOW : HIGH);
 
     if ( control < 0 )
       control = map(control, 0, -255, 0, 255);
-
-    if ( control < PWM_MIN )
-      control = PWM_MIN;
 
     analogWrite(PWMA, control);
     analogWrite(PWMB, control);
@@ -139,18 +163,11 @@ void Motor(int control, int LMB, int LMR, int RMB, int RMR)
 
 void printAll(int control)
 {
-  unsigned long current_time;
-  
-  Serial.print("XANGLE : ");  Serial.print(XANGLE);
+  Serial.print("CurrentAngle : ");  Serial.println(CurrentAngle);
   Serial.print("Kp : ");  Serial.print(Kp);
   Serial.print("  Ki : ");  Serial.print(Ki);
   Serial.print("  Kd : ");  Serial.print(Kd);
-  Serial.print("  PWM_MIN : ");  Serial.print(PWM_MIN);
   Serial.print("  control : ");  Serial.print(control); 
-
-  current_time = millis();
-  Serial.print("  time : "); Serial.println(current_time - prev_time);
-  prev_time = current_time;
 }
 
 void loop() {
@@ -160,19 +177,10 @@ void loop() {
   GetIMUData();
   control = PID();
   
-  
-  if (  ( XANGLE < TARGET + RANGE && XANGLE > TARGET - RANGE ) || ( XANGLE > 130.0 || XANGLE < 50.0 ) )  
-  {
-    MotorStop(LeftMotorBlack, LeftMotorRed, RightMotorBlack, RightMotorRed);
-    //IntegralError = 0; 
-  }
-
-  else
-  { 
-    GetAnalogData();
+  GetAnalogData();
        
-    Motor(control, LeftMotorBlack, LeftMotorRed, RightMotorBlack, RightMotorRed);
-  }
+  Motor(control, LeftMotorBlack, LeftMotorRed, RightMotorBlack, RightMotorRed);
+  
 
   #if DebugMode
   printAll(control);
