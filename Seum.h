@@ -11,12 +11,19 @@
 #include <Wire.h>
 #endif
 
+#ifndef I2Cdev_h
+#define I2Cdev_h
+#include <I2Cdev.h>
+#endif
+
 #ifndef MPU6050
 #define MPU6050 0x68
 #endif
 
 #define TARGET 180
 #define MAX_PWM 255
+
+#define runEvery(t) for (static typeof(t) _lasttime;(typeof(t))((typeof(t))millis() - _lasttime) > (t);_lasttime += (t))
 
 #include "Arduino.h"
 
@@ -29,12 +36,16 @@ class Seum
 
     void IMUSetup();
     void GetIMUData(int IMUDataArray[]);
+    void GetPIDGainData(double PIDGainArray[]);
+    void SetPIDGain(double PIDGainArray[]);
     double ComplementaryFilter(int IMUDataArray[]);
     double KalmanFilter(int IMUDataArray[]);
     unsigned long GetMicroTimeGap();
 
-    int GetControlValue(int receiveAngle);
+    int GetControlValue(double receiveAngle);
+    int GetControlValue(double receiveAngle, double ControlDataArr[]);
     void MotorControl(int receiveControlValue);
+    void PrintAll();
 
 
 
@@ -54,23 +65,16 @@ class Seum
     double _prevError;
     double _integralError;
 
-    int _pControl;
-    int _iControl;
-    int _dControl;
+    double _pControl;
+    double _iControl;
+    double _dControl;
 
     int _control;
 
-    #ifndef Kp
-    double Kp;
-    #endif
-
-    #ifndef Ki
-    double Ki;
-    #endif
-
-    #ifndef Kd
-    double Kd;
-    #endif
+    double _Kp;
+    double _Ki;
+    double _Kd;
+    double _K;
     /* PID */
 
     /* IMU */
