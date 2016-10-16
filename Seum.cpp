@@ -1,7 +1,5 @@
 #include "Seum.h"
 
-Kalman kalmanX;
-
 Seum::Seum()
 {
   _PWMA = 11;
@@ -29,19 +27,14 @@ void Seum::IMUSetup()
 {
   Wire.begin();
   Serial.begin(115200);
-/*
-  Wire.beginTransmission(MPU6050);
-  Wire.write(0x19);
-  Wire.write(7);
-  Wire.endTransmission(true);
-*/
+
   Wire.beginTransmission(MPU6050);
   Wire.write(0x6B);
   Wire.write(0);
   Wire.endTransmission(true);
 }
 
-void Seum::GetIMUData(int *IMUDataArray)
+void Seum::GetIMURawData(int *IMUDataArray)
 {
   Wire.beginTransmission(MPU6050);
   Wire.write(0x3D);
@@ -69,9 +62,10 @@ double Seum::ComplementaryFilter(int *IMUDataArray)
     return _currentAngle;
 }
 
-double Seum::KalmanFilter(int *IMUDataArray)
+double Seum::GetGradient()
 {
-
+    GetIMURawData(_IMUDataArray);
+    return ComplementaryFilter(_IMUDataArray);
 }
 
 int Seum::GetControlValue(double receiveAngle)
@@ -79,7 +73,8 @@ int Seum::GetControlValue(double receiveAngle)
   _currentError = TARGET - receiveAngle;
   _pControl = _currentError * _Kp;
 
-  _integralError += _currentError * _timeGap;
+  _integralError += _currentError * _timeGap / 1000000;
+  _integralError = constrain(_integralError, -15, 15);
   _iControl = _integralError * _Ki;
 
   _dControl = ( _currentError - _prevError ) * _Kd;
@@ -87,7 +82,7 @@ int Seum::GetControlValue(double receiveAngle)
   _prevError = _currentError;
 
   _control = _pControl + _iControl + _dControl;
-  _control = constrain(_control, -MAX_PWM, MAX_PWM);
+  _control = constrain(_control * _K, -MAX_PWM, MAX_PWM);
 
   return _control;
 }
@@ -110,9 +105,9 @@ int Seum::GetControlValue(double receiveAngle, double *ControlDataArr)
   _prevError = _currentError;
 
   _control = _pControl + _iControl + _dControl;
-  //_control = constrain(_control, -MAX_PWM, MAX_PWM);
+  _control = constrain(_control * _K, -MAX_PWM, MAX_PWM);
 
-  return constrain(_control * _K, -MAX_PWM, MAX_PWM);
+  return _control;
 }
 
 void Seum::MotorControl(int receiveControlValue)
@@ -127,6 +122,12 @@ void Seum::MotorControl(int receiveControlValue)
 
   analogWrite(_PWMA, receiveControlValue);
   analogWrite(_PWMB, receiveControlValue);
+}
+
+void Seum::PIDMotor(double receiveAngle)
+{
+  GetControlValue(receiveAngle);
+  MotorControl(_control);
 }
 
 void Seum::GetPIDGainData(double *PIDGainArray)
@@ -155,8 +156,11 @@ unsigned long Seum::GetMicroTimeGap()
 
 void Seum::PrintAll()
 {
+  _millisTimeGap = millis() - _millisCurrentTime;
+  _millisCurrentTime = millis();
+
   Serial.print("TIME : ");
-  Serial.print(_timeGap / 1000);
+  Serial.print(_millisTimeGap);
   Serial.print("    ");
 
   Serial.print("Kp : ");
@@ -173,4 +177,22 @@ void Seum::PrintAll()
 
   Serial.print("K : ");
   Serial.println(_K);
+}
+
+void Seum::LevelOne()
+{
+  GetIMURawData(_IMUDataArray);
+  ComplementaryFilter(_IMUDataArray);
+
+  GetControlValue(_currentAngle);
+  MotorControl(_control);
+}
+
+void Seum::LevelTwo()
+{
+  GetIMURawData(_IMUDataArray);
+  ComplementaryFilter(_IMUDataArray);
+
+  GetControlValue(_currentAngle);
+  MotorControl(_control);
 }
